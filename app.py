@@ -1,11 +1,9 @@
-# app.py - FIXED Forex Certainty System
+# app.py - Forex Certainty System: RAW DATA → SYSTEM DECISIONS
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
-import warnings
-warnings.filterwarnings('ignore')
 
 # ============================================================================
 # CUSTOM CSS
@@ -15,26 +13,35 @@ st.markdown("""
     .trade-buy {
         background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
         color: white;
-        padding: 20px;
+        padding: 25px;
         border-radius: 10px;
-        margin: 15px 0;
+        margin: 20px 0;
         border-left: 5px solid #28a745;
     }
     .trade-sell {
         background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
         color: white;
-        padding: 20px;
+        padding: 25px;
         border-radius: 10px;
-        margin: 15px 0;
+        margin: 20px 0;
         border-left: 5px solid #dc3545;
     }
     .no-trade {
         background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
         color: white;
+        padding: 25px;
+        border-radius: 10px;
+        margin: 20px 0;
+        border-left: 5px solid #6c757d;
+    }
+    .system-decision {
+        background: #1a1a1a;
+        color: white;
         padding: 20px;
         border-radius: 10px;
         margin: 15px 0;
-        border-left: 5px solid #6c757d;
+        border: 2px solid #ffcc00;
+        font-family: 'Courier New', monospace;
     }
     .metric-card {
         background: #f8f9fa;
@@ -44,274 +51,225 @@ st.markdown("""
         border-left: 4px solid #1E88E5;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    .pattern-item {
-        background: #e9ecef;
-        padding: 8px 12px;
-        margin: 5px 0;
-        border-radius: 5px;
-        border-left: 3px solid #1E88E5;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# DATA PROCESSING - FIXED
+# LOAD RAW DATA
 # ============================================================================
 @st.cache_data(ttl=300)
-def load_and_validate_data():
-    """Load and validate CSV data with proper error handling"""
+def load_raw_data():
+    """Load ONLY raw data from CSV"""
     try:
-        # Load your CSV from GitHub
         csv_url = "https://raw.githubusercontent.com/profdue/tradelock/main/forex_certainty_data.csv"
         df = pd.read_csv(csv_url)
-        
-        # DEBUG: Show what we loaded
-        st.info(f"📊 CSV Loaded: {len(df)} rows, {len(df.columns)} columns")
         
         # Clean column names
         df.columns = [str(col).strip().lower().replace(' ', '_') for col in df.columns]
         
-        # Convert date - handle different formats
-        date_column = None
-        for col in df.columns:
-            if 'date' in col.lower():
-                date_column = col
-                break
+        # Convert date
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
         
-        if date_column:
-            df['date'] = pd.to_datetime(df[date_column], errors='coerce')
-            # If conversion failed, use today's date
-            df['date'] = df['date'].fillna(pd.Timestamp('today').normalize())
-        else:
-            df['date'] = pd.Timestamp('today').normalize()
-        
-        # Sort by date and get latest
+        # Get latest raw data
         df = df.sort_values('date', ascending=True)
+        latest_raw = df.iloc[-1].to_dict()
         
-        # Ensure we have current_price column
-        if 'current_price' not in df.columns:
-            # Try to find price column
-            for col in ['price', 'close', 'last']:
-                if col in df.columns:
-                    df['current_price'] = df[col]
-                    break
-        
-        # Convert numeric columns
-        numeric_columns = [
-            'current_price', 'daily_range_pips', 'weekly_range_pips',
-            'retail_long_pct', 'rsi_daily', 'atr_daily_pips',
-            'certainty_score', 'confidence_pct', 'support_level_1',
-            'resistance_level_1', 'daily_change_pct'
-        ]
-        
-        for col in numeric_columns:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Fill missing values
-        for col in df.columns:
-            if df[col].dtype in ['float64', 'int64']:
-                df[col] = df[col].fillna(df[col].median() if df[col].notna().any() else 0)
-        
-        # Get latest data
-        latest = df.iloc[-1].to_dict()
-        
-        # Ensure we have required fields
-        defaults = {
-            'current_price': 1.1700,
-            'retail_long_pct': 50,
-            'rsi_daily': 50,
-            'atr_daily_pips': 80,
-            'daily_range_pips': 40,
-            'support_level_1': 1.1650,
-            'resistance_level_1': 1.1750,
-            'market_regime': 'RANGING',
-            'certainty_score': 0.5,
-            'currency_pair': 'EURUSD'
-        }
-        
-        for key, default_value in defaults.items():
-            if key not in latest or pd.isna(latest[key]):
-                latest[key] = default_value
-        
-        st.success("✅ Data loaded and validated successfully")
-        return df, latest
+        st.success(f"✅ RAW DATA LOADED: {len(df)} rows, {len(df.columns)} columns")
+        return df, latest_raw
         
     except Exception as e:
-        st.error(f"❌ Error loading CSV: {str(e)[:100]}...")
-        
-        # Create emergency data
-        today = datetime.now().date()
-        emergency_data = {
-            'date': today,
-            'current_price': 1.1700,
-            'retail_long_pct': 50,
-            'rsi_daily': 50,
-            'atr_daily_pips': 80,
-            'daily_range_pips': 40,
-            'support_level_1': 1.1650,
-            'resistance_level_1': 1.1750,
-            'market_regime': 'RANGING',
-            'certainty_score': 0.5,
-            'currency_pair': 'EURUSD',
-            'daily_change_pct': 0.0,
-            'weekly_range_pips': 60
-        }
-        
-        df = pd.DataFrame([emergency_data])
-        return df, emergency_data
+        st.error(f"❌ Error loading raw data: {e}")
+        return None, None
 
 # ============================================================================
-# PATTERN DETECTION - FIXED
+# PATTERN DETECTION FROM RAW DATA
 # ============================================================================
-def detect_patterns(data):
-    """Detect trading patterns from data"""
+def detect_patterns_from_raw(raw_data):
+    """System detects patterns from RAW data"""
+    
+    # Extract raw values
+    current_price = float(raw_data.get('current_price', 1.1700))
+    retail_long = float(raw_data.get('retail_long_percentage', 50))
+    retail_short = float(raw_data.get('retail_short_percentage', 50))
+    retail_long_avg = float(raw_data.get('retail_long_avg_price', current_price))
+    retail_short_avg = float(raw_data.get('retail_short_avg_price', current_price))
+    
+    rsi_daily = float(raw_data.get('rsi_daily', 50))
+    rsi_weekly = float(raw_data.get('rsi_weekly', 50))
+    
+    daily_range = abs(float(raw_data.get('daily_high', current_price)) - float(raw_data.get('daily_low', current_price))) * 10000
+    atr = float(raw_data.get('atr_daily_pips', 80))
+    
+    support_1 = float(raw_data.get('support_level_1', current_price - 0.0020))
+    resistance_1 = float(raw_data.get('resistance_level_1', current_price + 0.0020))
+    
+    market_condition = raw_data.get('market_condition', 'RANGING')
+    trend_strength = float(raw_data.get('trend_strength', 0.5))
+    
+    # Initialize patterns
     patterns = {
         'retail_patterns': [],
         'rsi_patterns': [],
         'volatility_patterns': [],
-        'market_regime': {}
+        'market_regime': {},
+        'support_resistance': {},
+        'candlestick_patterns': []
     }
     
-    # 1. Retail Patterns
-    retail_pct = float(data.get('retail_long_pct', 50))
-    retail_distance = float(data.get('retail_distance_pips', 0))
+    # 1. RETAIL SENTIMENT PATTERNS
+    retail_distance = (current_price - retail_long_avg) * 10000
     
-    if retail_pct > 70:
+    # Pattern 1: Retail crowded long (>70%)
+    if retail_long > 70:
         patterns['retail_patterns'].append({
             'name': 'retail_crowded_long',
             'signal': 'SELL',
-            'strength': min((retail_pct - 70) / 30, 1.0),
-            'reason': f'Retail {retail_pct:.0f}% long (crowded)',
-            'certainty': 0.85
-        })
-    elif retail_pct < 30:
-        patterns['retail_patterns'].append({
-            'name': 'retail_crowded_short',
-            'signal': 'BUY',
-            'strength': min((30 - retail_pct) / 30, 1.0),
-            'reason': f'Retail {retail_pct:.0f}% long (crowded short)',
+            'strength': min((retail_long - 70) / 30, 1.0),
+            'reason': f'Retail {retail_long}% long (crowded trade)',
             'certainty': 0.85
         })
     
-    if abs(retail_distance) > 30:
+    # Pattern 2: Retail pain point (underwater)
+    if abs(retail_distance) > 15:
         patterns['retail_patterns'].append({
             'name': 'retail_pain_point',
             'signal': 'SELL' if retail_distance < 0 else 'BUY',
-            'strength': min(abs(retail_distance) / 100, 1.0),
-            'reason': f'Retail {abs(retail_distance):.0f} pips underwater',
+            'strength': min(abs(retail_distance) / 50, 1.0),
+            'reason': f'Retail avg position {abs(retail_distance):.1f} pips underwater',
             'certainty': 0.80
         })
     
-    # 2. RSI Patterns
-    rsi = float(data.get('rsi_daily', 50))
-    
-    if rsi < 30:
+    # 2. RSI PATTERNS
+    # Daily RSI oversold/overbought
+    if rsi_daily < 30:
         patterns['rsi_patterns'].append({
-            'name': 'rsi_oversold',
+            'name': 'rsi_oversold_daily',
             'signal': 'BUY',
-            'strength': (30 - rsi) / 30,
-            'reason': f'RSI oversold: {rsi:.1f}',
+            'strength': (30 - rsi_daily) / 30,
+            'reason': f'Daily RSI oversold: {rsi_daily:.1f}',
             'certainty': 0.80
         })
-    elif rsi > 70:
+    elif rsi_daily > 70:
         patterns['rsi_patterns'].append({
-            'name': 'rsi_overbought',
+            'name': 'rsi_overbought_daily',
             'signal': 'SELL',
-            'strength': (rsi - 70) / 30,
-            'reason': f'RSI overbought: {rsi:.1f}',
+            'strength': (rsi_daily - 70) / 30,
+            'reason': f'Daily RSI overbought: {rsi_daily:.1f}',
             'certainty': 0.80
         })
     
-    # 3. Volatility Patterns
-    daily_range = float(data.get('daily_range_pips', 40))
-    atr = float(data.get('atr_daily_pips', 80))
+    # Weekly RSI extremes
+    if rsi_weekly < 35:
+        patterns['rsi_patterns'].append({
+            'name': 'rsi_oversold_weekly',
+            'signal': 'BUY',
+            'strength': (35 - rsi_weekly) / 35,
+            'reason': f'Weekly RSI oversold: {rsi_weekly:.1f}',
+            'certainty': 0.75
+        })
     
+    # 3. VOLATILITY PATTERNS
     if atr > 0:
         volatility_ratio = daily_range / atr
         
+        # Low volatility (range < 0.5x ATR)
         if volatility_ratio < 0.5:
             patterns['volatility_patterns'].append({
                 'name': 'low_volatility',
                 'signal': 'RANGE_BOUND',
                 'strength': (0.5 - volatility_ratio) * 2,
-                'reason': f'Low volatility: {daily_range:.0f}pips ({volatility_ratio:.2f}x ATR)',
+                'reason': f'Low volatility: range {daily_range:.0f}pips ({volatility_ratio:.2f}x ATR)',
                 'certainty': 0.75
             })
+        # High volatility (range > 1.5x ATR)
         elif volatility_ratio > 1.5:
             patterns['volatility_patterns'].append({
                 'name': 'high_volatility',
                 'signal': 'TRENDING',
                 'strength': min((volatility_ratio - 1.5) / 2, 1.0),
-                'reason': f'High volatility: {daily_range:.0f}pips ({volatility_ratio:.2f}x ATR)',
+                'reason': f'High volatility: range {daily_range:.0f}pips ({volatility_ratio:.2f}x ATR)',
                 'certainty': 0.70
             })
     
-    # 4. Market Regime
-    regime = str(data.get('market_regime', 'RANGING')).upper()
+    # 4. MARKET REGIME
+    patterns['market_regime'] = {
+        'regime': market_condition,
+        'signal': 'BUY' if trend_strength > 0.6 and 'UP' in str(market_condition).upper() else 
+                  'SELL' if trend_strength > 0.6 and 'DOWN' in str(market_condition).upper() else 
+                  'RANGE_BOUND',
+        'strength': trend_strength,
+        'certainty': 0.70 if trend_strength > 0.6 else 0.60
+    }
     
-    if 'TREND' in regime:
-        patterns['market_regime'] = {
-            'regime': 'TRENDING',
-            'signal': 'BUY' if 'UP' in regime else 'SELL' if 'DOWN' in regime else 'NEUTRAL',
-            'strength': float(data.get('trend_strength', 0.5)),
-            'certainty': 0.75
-        }
-    elif 'RANG' in regime:
-        patterns['market_regime'] = {
-            'regime': 'RANGING',
-            'signal': 'RANGE_BOUND',
-            'strength': 0.7,
-            'certainty': 0.70
-        }
-    else:
-        patterns['market_regime'] = {
-            'regime': regime,
-            'signal': 'NEUTRAL',
-            'strength': 0.5,
-            'certainty': 0.65
+    # 5. SUPPORT/RESISTANCE
+    price_to_support = (current_price - support_1) * 10000
+    price_to_resistance = (resistance_1 - current_price) * 10000
+    
+    patterns['support_resistance'] = {
+        'support_1': support_1,
+        'resistance_1': resistance_1,
+        'price_to_support': price_to_support,
+        'price_to_resistance': price_to_resistance,
+        'near_support': price_to_support < 20,  # Within 20 pips
+        'near_resistance': price_to_resistance < 20,
+        'signal': 'BUY' if price_to_support < 20 else 'SELL' if price_to_resistance < 20 else 'NEUTRAL'
+    }
+    
+    # 6. NEWS IMPACT
+    high_news = int(raw_data.get('high_impact_news', 0))
+    if high_news > 0:
+        patterns['news_impact'] = {
+            'high_impact_count': high_news,
+            'signal': 'AVOID' if high_news >= 2 else 'CAUTION',
+            'certainty': 0.90 if high_news >= 2 else 0.75,
+            'reason': f'{high_news} high-impact news events'
         }
     
     return patterns
 
 # ============================================================================
-# CERTAINTY CALCULATION - FIXED
+# CERTAINTY CALCULATION
 # ============================================================================
-def calculate_certainty(patterns):
-    """Calculate overall certainty score"""
+def calculate_certainty_from_patterns(patterns):
+    """SYSTEM calculates certainty from detected patterns"""
     
     weights = {
         'retail_patterns': 0.25,
         'rsi_patterns': 0.20,
-        'volatility_patterns': 0.20,
-        'market_regime': 0.35
+        'volatility_patterns': 0.15,
+        'market_regime': 0.15,
+        'support_resistance': 0.15,
+        'news_impact': 0.10
     }
     
     category_scores = {}
     category_signals = {}
     
-    # Calculate scores for each category
+    # Calculate scores for each pattern category
     for category, pattern_data in patterns.items():
-        if category == 'market_regime':
-            # Handle market regime specially
-            if pattern_data:
-                score = pattern_data.get('strength', 0.5) * pattern_data.get('certainty', 0.5)
+        if not pattern_data:
+            continue
+            
+        if category in ['market_regime', 'support_resistance', 'news_impact']:
+            # Single object categories
+            if isinstance(pattern_data, dict):
+                certainty = pattern_data.get('certainty', 0.5)
+                strength = pattern_data.get('strength', 0.5)
+                score = certainty * strength
                 signal = pattern_data.get('signal', 'NEUTRAL')
+                
                 category_scores[category] = score
                 category_signals[category] = signal
-            continue
         
-        # For pattern lists
-        if isinstance(pattern_data, list) and pattern_data:
-            # Find strongest pattern in category
+        elif isinstance(pattern_data, list) and pattern_data:
+            # List of patterns (find strongest)
             strongest = max(pattern_data, key=lambda x: x.get('strength', 0))
             score = strongest.get('strength', 0) * strongest.get('certainty', 0.5)
             signal = strongest.get('signal', 'NEUTRAL')
+            
             category_scores[category] = score
             category_signals[category] = signal
-        else:
-            category_scores[category] = 0.5
-            category_signals[category] = 'NEUTRAL'
     
     # Apply weights
     weighted_score = 0
@@ -326,194 +284,258 @@ def calculate_certainty(patterns):
     
     primary_signal = max(signal_counts, key=signal_counts.get) if signal_counts else 'NEUTRAL'
     
+    # Calculate signal alignment bonus
+    alignment = max(signal_counts.values()) / len(category_signals) if category_signals else 0
+    if alignment >= 0.75:
+        weighted_score *= 1.15  # 15% boost for good alignment
+    
     return {
         'overall_certainty': min(weighted_score, 1.0),
         'primary_signal': primary_signal,
         'category_scores': category_scores,
-        'category_signals': category_signals
+        'category_signals': category_signals,
+        'signal_alignment': alignment
     }
 
 # ============================================================================
-# TRADE GENERATION - FIXED
+# TRADE GENERATION
 # ============================================================================
-def generate_trade(data, patterns, certainty_data):
-    """Generate trade based on patterns and certainty"""
+def generate_trade_from_analysis(raw_data, patterns, certainty_data):
+    """SYSTEM generates trade from analysis"""
     
     certainty = certainty_data['overall_certainty']
     signal = certainty_data['primary_signal']
     
-    if certainty < 0.60:
+    # NO TRADE conditions
+    if certainty < 0.65:
         return {
             'signal': 'NO_TRADE',
+            'type': 'SYSTEM_DECISION',
             'certainty': certainty,
-            'reason': f'Insufficient certainty ({certainty:.1%})',
+            'reason': f'Insufficient certainty: {certainty:.1%}',
             'recommendation': 'Wait for better setup'
         }
     
-    # Get price data
-    current_price = float(data.get('current_price', 1.1700))
-    atr = float(data.get('atr_daily_pips', 80))
-    support = float(data.get('support_level_1', current_price - 0.0020))
-    resistance = float(data.get('resistance_level_1', current_price + 0.0020))
+    # Get raw data values
+    current_price = float(raw_data.get('current_price', 1.1700))
+    atr = float(raw_data.get('atr_daily_pips', 80))
+    support_1 = float(raw_data.get('support_level_1', current_price - 0.0020))
+    resistance_1 = float(raw_data.get('resistance_level_1', current_price + 0.0020))
     
+    # Avoid trading if too many news events
+    high_news = int(raw_data.get('high_impact_news', 0))
+    if high_news >= 2:
+        return {
+            'signal': 'NO_TRADE',
+            'type': 'SYSTEM_DECISION',
+            'certainty': 0.90,
+            'reason': f'{high_news} high-impact news events - Too risky',
+            'recommendation': 'Avoid trading during major news'
+        }
+    
+    # Generate trade parameters
     if signal in ['BUY', 'BULLISH']:
-        # Generate BUY trade
-        entry_distance = atr * 0.0001  # 10% of ATR
-        entry_price = max(support + 0.0001, current_price - entry_distance)
-        stop_distance = atr * 0.00015  # 1.5x ATR
-        stop_loss = entry_price - stop_distance
+        # BUY trade logic
+        entry_distance = atr * 0.00012  # 12% of ATR
+        entry_price = max(support_1 + 0.0001, current_price - entry_distance)
+        stop_loss = entry_price - (atr * 0.00018)  # 1.8x ATR
         
-        # Calculate take profit based on risk/reward
         risk = entry_price - stop_loss
-        if certainty > 0.85:
-            risk_reward = 2.5
-        elif certainty > 0.75:
-            risk_reward = 2.0
-        else:
-            risk_reward = 1.5
-        
+        risk_reward = self._get_risk_reward_ratio(certainty)
         take_profit = entry_price + (risk * risk_reward)
+        
+        position_size = self._calculate_position_size(entry_price, stop_loss, certainty)
         
         return {
             'signal': 'BUY',
+            'type': 'SYSTEM_DECISION',
             'entry_price': round(entry_price, 5),
             'stop_loss': round(stop_loss, 5),
             'take_profit': round(take_profit, 5),
             'certainty': certainty,
             'risk_reward': risk_reward,
-            'position_size': round(100 / (abs(entry_price - stop_loss) * 10000 * 10), 2),
-            'reason': _generate_reason(patterns, 'BUY'),
-            'conditions': ['Price reaches entry level', 'Stop loss on breach']
+            'position_size': position_size,
+            'stake_multiplier': self._get_stake_multiplier(certainty),
+            'reason': self._generate_trade_reason(patterns, 'BUY'),
+            'entry_conditions': [
+                f'Price reaches {entry_price:.5f}',
+                f'Stop loss at {stop_loss:.5f}',
+                'No conflicting high-impact news'
+            ]
         }
     
     elif signal in ['SELL', 'BEARISH']:
-        # Generate SELL trade
-        entry_distance = atr * 0.0001
-        entry_price = min(resistance - 0.0001, current_price + entry_distance)
-        stop_distance = atr * 0.00015
-        stop_loss = entry_price + stop_distance
+        # SELL trade logic
+        entry_distance = atr * 0.00012
+        entry_price = min(resistance_1 - 0.0001, current_price + entry_distance)
+        stop_loss = entry_price + (atr * 0.00018)
         
         risk = stop_loss - entry_price
-        if certainty > 0.85:
-            risk_reward = 2.5
-        elif certainty > 0.75:
-            risk_reward = 2.0
-        else:
-            risk_reward = 1.5
-        
+        risk_reward = self._get_risk_reward_ratio(certainty)
         take_profit = entry_price - (risk * risk_reward)
+        
+        position_size = self._calculate_position_size(entry_price, stop_loss, certainty)
         
         return {
             'signal': 'SELL',
+            'type': 'SYSTEM_DECISION',
             'entry_price': round(entry_price, 5),
             'stop_loss': round(stop_loss, 5),
             'take_profit': round(take_profit, 5),
             'certainty': certainty,
             'risk_reward': risk_reward,
-            'position_size': round(100 / (abs(entry_price - stop_loss) * 10000 * 10), 2),
-            'reason': _generate_reason(patterns, 'SELL'),
-            'conditions': ['Price reaches entry level', 'Stop loss on breach']
+            'position_size': position_size,
+            'stake_multiplier': self._get_stake_multiplier(certainty),
+            'reason': self._generate_trade_reason(patterns, 'SELL'),
+            'entry_conditions': [
+                f'Price reaches {entry_price:.5f}',
+                f'Stop loss at {stop_loss:.5f}',
+                'No conflicting high-impact news'
+            ]
         }
-    
     else:
         return {
             'signal': 'NO_TRADE',
+            'type': 'SYSTEM_DECISION',
             'certainty': certainty,
-            'reason': 'No clear directional signal',
+            'reason': 'No clear directional signal from pattern analysis',
             'recommendation': 'Wait for pattern confirmation'
         }
 
-def _generate_reason(patterns, signal):
+def _get_risk_reward_ratio(self, certainty):
+    """Get risk/reward ratio based on certainty"""
+    if certainty > 0.85:
+        return 2.5
+    elif certainty > 0.75:
+        return 2.0
+    elif certainty > 0.65:
+        return 1.5
+    else:
+        return 1.0
+
+def _get_stake_multiplier(self, certainty):
+    """Get stake multiplier based on certainty"""
+    if certainty > 0.85:
+        return 2.0
+    elif certainty > 0.75:
+        return 1.5
+    elif certainty > 0.65:
+        return 1.0
+    else:
+        return 0.5
+
+def _calculate_position_size(self, entry, stop_loss, certainty):
+    """Calculate position size"""
+    base_risk = 100  # $100 for 1% risk on $10,000
+    
+    if certainty > 0.85:
+        risk_multiplier = 2.0
+    elif certainty > 0.75:
+        risk_multiplier = 1.5
+    elif certainty > 0.65:
+        risk_multiplier = 1.0
+    else:
+        risk_multiplier = 0.5
+    
+    risk_amount = base_risk * risk_multiplier
+    risk_pips = abs(entry - stop_loss) * 10000
+    
+    if risk_pips == 0:
+        return 0
+    
+    position_size = risk_amount / (risk_pips * 10)  # $10 per pip for EURUSD
+    return round(position_size, 2)
+
+def _generate_trade_reason(self, patterns, signal):
     """Generate trade reason from patterns"""
     reasons = []
     
     for category, pattern_data in patterns.items():
-        if category == 'market_regime':
-            if pattern_data and pattern_data.get('signal') == signal:
-                reasons.append(f"Market in {pattern_data.get('regime', '')} regime")
+        if not pattern_data:
             continue
-        
-        if isinstance(pattern_data, list):
+            
+        if isinstance(pattern_data, dict) and pattern_data.get('signal') == signal:
+            reasons.append(pattern_data.get('reason', ''))
+        elif isinstance(pattern_data, list):
             for pattern in pattern_data:
                 if pattern.get('signal') == signal:
                     reasons.append(pattern.get('reason', ''))
     
-    # Return top 2 reasons
-    return " | ".join(reasons[:2]) if reasons else "Multiple factors aligned"
+    return " | ".join(reasons[:3]) if reasons else "Pattern analysis indicates opportunity"
 
 # ============================================================================
 # MAIN APP
 # ============================================================================
 def main():
+    st.set_page_config(layout="wide")
+    
     # Title
     st.title("🎯 FOREX CERTAINTY SYSTEM")
-    st.markdown("**Real-time analysis from CSV data**")
+    st.markdown("**RAW DATA → SYSTEM ANALYSIS → TRADE DECISIONS**")
     
-    # Load data
-    df, latest_data = load_and_validate_data()
+    # Load raw data
+    df, latest_raw = load_raw_data()
     
-    # Show current date
-    current_date = latest_data.get('date', datetime.now().date())
+    if latest_raw is None:
+        st.error("Failed to load raw data")
+        return
+    
+    # Display current date
+    current_date = latest_raw.get('date', datetime.now().date())
     if hasattr(current_date, 'strftime'):
         display_date = current_date.strftime('%Y-%m-%d')
     else:
         display_date = str(current_date)
     
-    st.markdown(f"### 📅 Current Analysis Date: **{display_date}**")
+    st.markdown(f"### 📅 Analysis Date: **{display_date}**")
     
-    # Display key metrics
-    col1, col2, col3, col4 = st.columns(4)
+    # Show raw data summary
+    with st.expander("📊 RAW DATA SUMMARY"):
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Price", f"{latest_raw.get('current_price', 0):.5f}")
+        with col2:
+            st.metric("Retail Long", f"{latest_raw.get('retail_long_percentage', 0)}%")
+        with col3:
+            st.metric("RSI Daily", f"{latest_raw.get('rsi_daily', 0):.1f}")
+        with col4:
+            st.metric("High News", latest_raw.get('high_impact_news', 0))
+    
+    # SYSTEM ANALYSIS SECTION
+    st.markdown("### 🔍 SYSTEM ANALYSIS (Processing Raw Data...)")
+    
+    with st.spinner("Detecting patterns from raw data..."):
+        # 1. System detects patterns
+        patterns = detect_patterns_from_raw(latest_raw)
+        
+        # 2. System calculates certainty
+        certainty_data = calculate_certainty_from_patterns(patterns)
+        
+        # 3. System generates trade
+        trade = generate_trade_from_analysis(latest_raw, patterns, certainty_data)
+    
+    # SYSTEM DECISION
+    st.markdown("### 🎯 SYSTEM DECISION")
+    
+    certainty = certainty_data['overall_certainty']
+    
+    # Display certainty score
+    col1, col2 = st.columns([3, 1])
     
     with col1:
-        st.metric(
-            "Current Price", 
-            f"{latest_data.get('current_price', 0):.5f}",
-            f"{latest_data.get('daily_change_pct', 0):.2f}%"
-        )
+        certainty_color = "🟢" if certainty > 0.80 else "🟡" if certainty > 0.65 else "🔴"
+        st.markdown(f"**Certainty Score:** {certainty_color} **{certainty:.1%}**")
+        st.progress(certainty)
     
     with col2:
-        retail = latest_data.get('retail_long_pct', 50)
-        st.metric("Retail Bias", f"{retail:.0f}% LONG")
+        st.metric("Signal Alignment", f"{certainty_data['signal_alignment']:.0%}")
     
-    with col3:
-        rsi = latest_data.get('rsi_daily', 50)
-        rsi_status = "OVERSOLD" if rsi < 30 else "OVERBOUGHT" if rsi > 70 else "NEUTRAL"
-        st.metric("RSI", f"{rsi:.1f}", rsi_status)
-    
-    with col4:
-        regime = latest_data.get('market_regime', 'RANGING')
-        st.metric("Market Regime", regime)
-    
-    # Pattern detection
-    patterns = detect_patterns(latest_data)
-    
-    # Calculate certainty
-    certainty_data = calculate_certainty(patterns)
-    certainty_score = certainty_data['overall_certainty']
-    
-    # Display certainty
-    st.markdown(f"### 🎯 Certainty Score: **{certainty_score:.1%}**")
-    
-    # Progress bar with color coding
-    if certainty_score >= 0.80:
-        color = "green"
-    elif certainty_score >= 0.65:
-        color = "orange"
-    else:
-        color = "red"
-    
-    st.progress(certainty_score)
-    
-    # Generate trade
-    trade = generate_trade(latest_data, patterns, certainty_data)
-    
-    # Display trade signal
-    st.markdown("### 📊 TRADE SIGNAL")
-    
+    # Display trade decision
     if trade['signal'] == 'NO_TRADE':
         st.markdown(f"""
-        <div class="no-trade">
-            <h3>🚫 NO TRADE RECOMMENDED</h3>
+        <div class="system-decision">
+            <h3>🚫 SYSTEM DECISION: NO TRADE</h3>
             <p><strong>Reason:</strong> {trade['reason']}</p>
             <p><strong>Certainty:</strong> {trade['certainty']:.1%}</p>
             <p><strong>Recommendation:</strong> {trade.get('recommendation', 'Wait')}</p>
@@ -524,84 +546,33 @@ def main():
         
         st.markdown(f"""
         <div class="{trade_class}">
-            <h3>📈 {'🟢 BUY' if trade['signal'] == 'BUY' else '🔴 SELL'} EURUSD</h3>
+            <h3>📈 SYSTEM DECISION: {trade['signal']} EURUSD</h3>
             <p><strong>Entry Price:</strong> {trade['entry_price']}</p>
             <p><strong>Stop Loss:</strong> {trade['stop_loss']}</p>
             <p><strong>Take Profit:</strong> {trade['take_profit']}</p>
             <p><strong>Risk/Reward:</strong> 1:{trade['risk_reward']:.1f}</p>
             <p><strong>Position Size:</strong> {trade['position_size']} lots</p>
+            <p><strong>Stake Multiplier:</strong> {trade['stake_multiplier']}x</p>
             <p><strong>Certainty:</strong> {trade['certainty']:.1%}</p>
             <p><strong>Reason:</strong> {trade['reason']}</p>
-            <p><strong>Conditions:</strong> {', '.join(trade['conditions'])}</p>
+            <p><strong>Entry Conditions:</strong></p>
+            <ul>
+            {''.join([f'<li>{cond}</li>' for cond in trade.get('entry_conditions', [])])}
+            </ul>
         </div>
         """, unsafe_allow_html=True)
-    
-    # Pattern Analysis
-    st.markdown("### 🔍 PATTERN ANALYSIS")
-    
-    pattern_cols = st.columns(4)
-    
-    with pattern_cols[0]:
-        st.markdown("**Retail Patterns**")
-        if patterns['retail_patterns']:
-            for pattern in patterns['retail_patterns']:
-                st.markdown(f"<div class='pattern-item'>{pattern.get('reason', '')}</div>", unsafe_allow_html=True)
-        else:
-            st.info("No retail patterns detected")
-    
-    with pattern_cols[1]:
-        st.markdown("**RSI Patterns**")
-        if patterns['rsi_patterns']:
-            for pattern in patterns['rsi_patterns']:
-                st.markdown(f"<div class='pattern-item'>{pattern.get('reason', '')}</div>", unsafe_allow_html=True)
-        else:
-            st.info("No RSI patterns detected")
-    
-    with pattern_cols[2]:
-        st.markdown("**Volatility Patterns**")
-        if patterns['volatility_patterns']:
-            for pattern in patterns['volatility_patterns']:
-                st.markdown(f"<div class='pattern-item'>{pattern.get('reason', '')}</div>", unsafe_allow_html=True)
-        else:
-            st.info("No volatility patterns")
-    
-    with pattern_cols[3]:
-        st.markdown("**Market Regime**")
-        if patterns['market_regime']:
-            regime_info = patterns['market_regime']
-            st.markdown(f"<div class='pattern-item'>{regime_info.get('regime', 'Unknown')} (Strength: {regime_info.get('strength', 0):.1f})</div>", unsafe_allow_html=True)
-    
-    # Debug Information
-    with st.expander("🔧 Debug Information"):
-        tab1, tab2, tab3 = st.tabs(["CSV Data", "Patterns", "Calculations"])
         
-        with tab1:
-            st.write("Latest Data Row:")
-            st.json(latest_data)
-            
-            st.write("Full DataFrame:")
-            st.dataframe(df)
-        
-        with tab2:
-            st.json(patterns)
-        
-        with tab3:
-            st.json(certainty_data)
-            st.json(trade)
-    
-    # Execution Code for BUY/SELL
-    if trade['signal'] in ['BUY', 'SELL']:
+        # Execution code
         st.markdown("### 💻 EXECUTION CODE")
-        
-        code = f"""
-# MT4/MT5 Execution Code
+        exec_code = f"""
+# MT4/MT5 Execution Code (SYSTEM GENERATED)
 symbol = "EURUSD"
 entry = {trade['entry_price']}
 stoploss = {trade['stop_loss']}
 takeprofit = {trade['take_profit']}
 lots = {trade['position_size']}
 
-# {'Buy' if trade['signal'] == 'BUY' else 'Sell'} order
+# {'BUY' if trade['signal'] == 'BUY' else 'SELL'} order
 OrderSend(
     Symbol=symbol,
     Cmd={'OP_BUY' if trade['signal'] == 'BUY' else 'OP_SELL'},
@@ -609,17 +580,67 @@ OrderSend(
     Price=entry,
     Slippage=3,
     StopLoss=stoploss,
-    TakeProfit=takeprofit
+    TakeProfit=takeprofit,
+    Comment="Forex Certainty System"
 )
 """
+        st.code(exec_code, language='python')
+    
+    # PATTERN ANALYSIS
+    st.markdown("### 🔍 PATTERN DETECTION RESULTS")
+    
+    pattern_cols = st.columns(4)
+    
+    pattern_categories = [
+        ('Retail Patterns', 'retail_patterns'),
+        ('RSI Patterns', 'rsi_patterns'),
+        ('Volatility', 'volatility_patterns'),
+        ('Market Regime', 'market_regime')
+    ]
+    
+    for idx, (title, key) in enumerate(pattern_categories):
+        with pattern_cols[idx]:
+            st.markdown(f"**{title}**")
+            if key in patterns:
+                data = patterns[key]
+                if isinstance(data, list) and data:
+                    for pattern in data:
+                        st.markdown(f"<div class='metric-card'>{pattern.get('reason', '')}</div>", unsafe_allow_html=True)
+                elif isinstance(data, dict) and data:
+                    st.markdown(f"<div class='metric-card'>{data.get('regime', 'Unknown')} (Strength: {data.get('strength', 0):.2f})</div>", unsafe_allow_html=True)
+                else:
+                    st.info("No patterns")
+            else:
+                st.info("No data")
+    
+    # RAW DATA VIEWER
+    with st.expander("📁 VIEW RAW DATA"):
+        st.write("**Latest Raw Data Row:**")
+        st.json({k: v for k, v in latest_raw.items() if not pd.isna(v)})
         
-        st.code(code, language='python')
+        st.write("**Full DataFrame:**")
+        st.dataframe(df)
+    
+    # SYSTEM LOG
+    st.markdown("### 📝 SYSTEM LOG")
+    
+    log_data = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'analysis_date': display_date,
+        'patterns_detected': sum(len(v) if isinstance(v, list) else 1 for v in patterns.values() if v),
+        'certainty_score': certainty,
+        'system_decision': trade['signal'],
+        'trade_reason': trade.get('reason', ''),
+        'raw_data_points': len([v for v in latest_raw.values() if not pd.isna(v)])
+    }
+    
+    st.json(log_data)
     
     # Footer
     st.markdown("---")
     st.markdown(f"""
-    **System Status:** ✅ Operational | **Data Source:** GitHub CSV  
-    **Last Analysis:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | **Records:** {len(df)} rows
+    **SYSTEM STATUS:** ✅ Processing Raw Data | **DECISIONS:** System-Generated  
+    **DATA SOURCE:** forex_certainty_data.csv | **RECORDS:** {len(df)} rows
     """)
 
 # ============================================================================
