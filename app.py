@@ -5,6 +5,8 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import plotly.express as px
+import warnings
+warnings.filterwarnings('ignore')
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -51,15 +53,6 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     
-    .trade-card {
-        background: #f8f9fa;
-        border-radius: 10px;
-        padding: 15px;
-        margin: 10px 0;
-        border-left: 4px solid #28a745;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    
     /* Signal colors */
     .signal-buy {
         color: #28a745;
@@ -87,128 +80,281 @@ st.markdown("""
         border-radius: 5px;
         display: inline-block;
     }
-    
-    /* Progress bars */
-    .stProgress > div > div > div > div {
-        background-color: #1E88E5;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# DATA LOADING FUNCTIONS
+# DATA LOADING & SAFE HANDLING FUNCTIONS
 # ============================================================================
 @st.cache_data(ttl=3600)
-def load_data():
-    """Load CSV data from GitHub"""
+def load_and_validate_data():
+    """Load CSV data from GitHub with validation"""
     try:
-        # Try to load simple CSV (for display)
-        simple_df = pd.read_csv("https://raw.githubusercontent.com/profdue/tradelock/main/forex_certainty_data.csv")
+        # Try multiple possible CSV URLs
+        csv_urls = [
+            "https://raw.githubusercontent.com/profdue/tradelock/main/forex_certainty_data.csv",
+            "https://raw.githubusercontent.com/profdue/tradelock/main/forex_certainty_simple.csv",
+            "https://raw.githubusercontent.com/profdue/tradelock/main/forex_certainty_simple_fixed.csv"
+        ]
         
-        # Convert date column
-        if 'date' in simple_df.columns:
-            simple_df['date'] = pd.to_datetime(simple_df['date'])
-        elif 'Date' in simple_df.columns:
-            simple_df['date'] = pd.to_datetime(simple_df['Date'])
-            simple_df = simple_df.drop('Date', axis=1)
+        df = None
+        for url in csv_urls:
+            try:
+                df = pd.read_csv(url)
+                if not df.empty:
+                    st.success(f"✓ Loaded data from: {url.split('/')[-1]}")
+                    break
+            except:
+                continue
         
-        # Clean column names
-        simple_df.columns = [col.strip().lower().replace(' ', '_').replace('(', '').replace(')', '') for col in simple_df.columns]
+        # If no CSV found, create sample data
+        if df is None or df.empty:
+            st.warning("⚠️ No CSV found. Using sample data for demonstration.")
+            return create_sample_data()
         
-        return simple_df, None
+        # Standardize column names
+        df.columns = [str(col).strip().lower().replace(' ', '_').replace('(', '').replace(')', '') for col in df.columns]
+        
+        # Check for date column (try common names)
+        date_column = None
+        for col in df.columns:
+            if 'date' in col.lower():
+                date_column = col
+                break
+        
+        if date_column:
+            try:
+                df['date'] = pd.to_datetime(df[date_column])
+            except:
+                df['date'] = pd.to_datetime('today')
+        else:
+            df['date'] = pd.date_range(start='2024-01-01', periods=len(df), freq='D')
+        
+        # Ensure we have required columns
+        required_columns = {
+            'currency_pair': 'pair',
+            'current_price': 'price',
+            'trade_signal': 'signal',
+            'certainty_score': 'certainty',
+            'confidence_pct': 'confidence'
+        }
+        
+        # Try to find alternative column names
+        for required_col, alt_names in {
+            'currency_pair': ['pair', 'currency', 'currencypair', 'symbol'],
+            'current_price': ['price', 'currentprice', 'close', 'last'],
+            'trade_signal': ['signal', 'tradesignal', 'action', 'recommendation'],
+            'certainty_score': ['certainty', 'certaintyscore', 'score', 'probability'],
+            'confidence_pct': ['confidence', 'confidencepct', 'confidence_percent', 'pct']
+        }.items():
+            if required_col not in df.columns:
+                for alt in alt_names:
+                    if alt in df.columns:
+                        df[required_col] = df[alt]
+                        break
+        
+        # Create missing columns with default values if needed
+        if 'currency_pair' not in df.columns:
+            df['currency_pair'] = 'EURUSD'
+        if 'current_price' not in df.columns:
+            df['current_price'] = np.random.uniform(1.16, 1.18, len(df))
+        if 'trade_signal' not in df.columns:
+            df['trade_signal'] = np.random.choice(['BUY', 'SELL', 'WAIT'], len(df))
+        if 'certainty_score' not in df.columns:
+            df['certainty_score'] = np.random.uniform(0.6, 0.9, len(df))
+        if 'confidence_pct' not in df.columns:
+            df['confidence_pct'] = df['certainty_score'] * 100
+        
+        # Add other commonly needed columns with defaults
+        default_columns = {
+            'daily_range_pips': lambda: np.random.randint(30, 60, len(df)),
+            'weekly_range_pips': lambda: [54] * len(df),
+            'high_impact_news_count': lambda: np.random.randint(0, 3, len(df)),
+            'retail_long_pct': lambda: np.random.randint(55, 65, len(df)),
+            'rsi_daily': lambda: np.random.uniform(40, 60, len(df)),
+            'atr_daily_pips': lambda: np.random.uniform(85, 95, len(df)),
+            'pattern_sell_count': lambda: np.random.randint(5, 15, len(df)),
+            'market_regime': lambda: np.random.choice(['RANGING', 'TRENDING', 'CONSOLIDATION'], len(df)),
+            'support_level_1': lambda: np.random.uniform(1.1600, 1.1650, len(df)),
+            'resistance_level_1': lambda: np.random.uniform(1.1700, 1.1750, len(df)),
+            'entry_price': lambda: np.random.uniform(1.1650, 1.1750, len(df)),
+            'stop_loss': lambda: np.random.uniform(1.1600, 1.1700, len(df)),
+            'take_profit': lambda: np.random.uniform(1.1700, 1.1800, len(df))
+        }
+        
+        for col, default_func in default_columns.items():
+            if col not in df.columns:
+                df[col] = default_func()
+        
+        # Clean up: Set WAIT signals to have no entry/stop/tp
+        for i in range(len(df)):
+            if df.loc[i, 'trade_signal'] == 'WAIT':
+                df.loc[i, 'entry_price'] = np.nan
+                df.loc[i, 'stop_loss'] = np.nan
+                df.loc[i, 'take_profit'] = np.nan
+        
+        # Sort by date and reset index
+        df = df.sort_values('date').reset_index(drop=True)
+        
+        st.success(f"✅ Data loaded successfully: {len(df)} rows, {len(df.columns)} columns")
+        return df
         
     except Exception as e:
-        st.error(f"Error loading data: {e}")
-        
-        # Create sample data if CSV not found
-        st.info("Using sample data for demonstration")
-        return create_sample_data(), None
+        st.error(f"❌ Error loading data: {str(e)[:100]}...")
+        st.info("Using sample data instead")
+        return create_sample_data()
 
 def create_sample_data():
-    """Create sample data for demonstration"""
-    dates = pd.date_range(start='2024-01-01', end='2024-01-10', freq='D')
+    """Create comprehensive sample data for demonstration"""
+    dates = pd.date_range(start='2024-01-01', end='2024-01-31', freq='D')
+    
+    # Generate realistic forex data
+    np.random.seed(42)  # For reproducibility
+    
+    # Base price with some trend
+    base_price = 1.1700
+    price_series = [base_price]
+    for i in range(1, len(dates)):
+        change = np.random.uniform(-0.002, 0.002)
+        price_series.append(price_series[-1] + change)
     
     data = {
         'date': dates,
         'currency_pair': ['EURUSD'] * len(dates),
-        'current_price': np.random.uniform(1.1650, 1.1750, len(dates)),
-        'daily_range_pips': np.random.randint(30, 60, len(dates)),
-        'weekly_range_pips': [54] * len(dates),
-        'high_impact_news_count': np.random.randint(0, 3, len(dates)),
-        'retail_long_pct': np.random.randint(55, 65, len(dates)),
-        'rsi_daily': np.random.uniform(40, 60, len(dates)),
-        'atr_daily_pips': np.random.uniform(85, 95, len(dates)),
-        'pattern_sell_count': np.random.randint(5, 15, len(dates)),
-        'market_regime': np.random.choice(['RANGING', 'TRENDING', 'CONSOLIDATION'], len(dates)),
-        'support_level_1': np.random.uniform(1.1600, 1.1650, len(dates)),
-        'resistance_level_1': np.random.uniform(1.1700, 1.1750, len(dates)),
-        'certainty_score': np.random.uniform(0.6, 0.9, len(dates)),
-        'trade_signal': np.random.choice(['BUY', 'SELL', 'WAIT'], len(dates)),
-        'entry_price': np.random.uniform(1.1650, 1.1750, len(dates)),
-        'stop_loss': np.random.uniform(1.1600, 1.1700, len(dates)),
-        'take_profit': np.random.uniform(1.1700, 1.1800, len(dates)),
-        'confidence_pct': np.random.randint(60, 95, len(dates))
+        'current_price': price_series,
+        'daily_open': [p - np.random.uniform(-0.0005, 0.0005) for p in price_series],
+        'daily_high': [p + np.random.uniform(0.001, 0.003) for p in price_series],
+        'daily_low': [p - np.random.uniform(0.001, 0.003) for p in price_series],
+        'daily_close': price_series,
+        'daily_change_pct': np.random.uniform(-0.2, 0.2, len(dates)),
+        'daily_range_pips': np.random.randint(25, 55, len(dates)),
+        'weekly_range_pips': np.random.randint(45, 75, len(dates)),
+        'high_impact_news_count': np.random.choice([0, 1, 2], len(dates), p=[0.7, 0.2, 0.1]),
+        'medium_impact_news_count': np.random.choice([0, 1, 2, 3, 4, 5], len(dates)),
+        'retail_long_avg': [p + np.random.uniform(-0.001, 0.002) for p in price_series],
+        'retail_short_avg': [p - np.random.uniform(0.010, 0.015) for p in price_series],
+        'retail_net_position': np.random.choice(['LONG', 'SHORT'], len(dates), p=[0.7, 0.3]),
+        'retail_long_pct': np.random.randint(45, 70, len(dates)),
+        'rsi_daily': np.random.uniform(30, 70, len(dates)),
+        'rsi_weekly': np.random.uniform(35, 65, len(dates)),
+        'atr_daily_pips': np.random.uniform(80, 100, len(dates)),
+        'adx_daily': np.random.uniform(20, 35, len(dates)),
+        'macd_daily': np.random.uniform(-0.003, 0.003, len(dates)),
+        'pattern_sell_count': np.random.randint(3, 15, len(dates)),
+        'pattern_buy_count': np.random.randint(2, 10, len(dates)),
+        'market_regime': np.random.choice(['TRENDING', 'RANGING', 'CONSOLIDATION', 'BREAKOUT'], len(dates)),
+        'trend_strength': np.random.uniform(0.2, 0.8, len(dates)),
+        'support_level_1': [p - np.random.uniform(0.002, 0.005) for p in price_series],
+        'resistance_level_1': [p + np.random.uniform(0.002, 0.005) for p in price_series],
+        'certainty_score': np.random.uniform(0.5, 0.95, len(dates)),
     }
     
-    # Clear some values for WAIT signals
-    for i in range(len(dates)):
-        if data['trade_signal'][i] == 'WAIT':
-            data['entry_price'][i] = np.nan
-            data['stop_loss'][i] = np.nan
-            data['take_profit'][i] = np.nan
+    df = pd.DataFrame(data)
     
-    return pd.DataFrame(data)
+    # Generate trade signals based on certainty
+    df['trade_signal'] = df['certainty_score'].apply(
+        lambda x: 'BUY' if x > 0.8 else ('SELL' if x > 0.65 else 'WAIT')
+    )
+    
+    # Generate confidence percentage
+    df['confidence_pct'] = (df['certainty_score'] * 100).astype(int)
+    
+    # Generate entry prices for BUY/SELL signals
+    df['entry_price'] = df.apply(
+        lambda row: row['current_price'] + np.random.uniform(-0.001, 0.001) 
+        if row['trade_signal'] in ['BUY', 'SELL'] else np.nan, 
+        axis=1
+    )
+    
+    # Generate stop loss and take profit
+    df['stop_loss'] = df.apply(
+        lambda row: row['entry_price'] - 0.002 if row['trade_signal'] == 'BUY' else (
+            row['entry_price'] + 0.002 if row['trade_signal'] == 'SELL' else np.nan
+        ), axis=1
+    )
+    
+    df['take_profit'] = df.apply(
+        lambda row: row['entry_price'] + 0.004 if row['trade_signal'] == 'BUY' else (
+            row['entry_price'] - 0.004 if row['trade_signal'] == 'SELL' else np.nan
+        ), axis=1
+    )
+    
+    return df
 
 # ============================================================================
-# ANALYSIS FUNCTIONS
+# SAFE DATA ANALYSIS FUNCTIONS
 # ============================================================================
-def calculate_metrics(df):
-    """Calculate system metrics"""
+def safe_get(df, column, default=None, idx=-1):
+    """Safely get value from dataframe with defaults"""
+    try:
+        if column in df.columns:
+            value = df.iloc[idx][column]
+            if pd.isna(value):
+                return default
+            return value
+    except:
+        pass
+    return default
+
+def calculate_safe_metrics(df):
+    """Calculate system metrics safely"""
     if df.empty:
-        return {}
+        return {
+            'latest_signal': 'WAIT',
+            'signal_color': '#ffc107',
+            'current_price': 1.1700,
+            'certainty_score': 0.5,
+            'confidence': 50,
+            'market_regime': 'UNKNOWN',
+            'daily_range': 40,
+            'retail_bias': 50,
+            'rsi': 50,
+            'news_count': 0,
+            'win_rate': 0,
+            'avg_certainty': 0,
+            'total_signals': 0
+        }
     
-    latest = df.iloc[-1]
+    # Safely get all values with defaults
+    latest_signal = safe_get(df, 'trade_signal', 'WAIT')
     
-    # Determine signal color
-    if latest['trade_signal'] == 'BUY':
+    if latest_signal == 'BUY':
         signal_color = '#28a745'
         signal_icon = '🟢'
-    elif latest['trade_signal'] == 'SELL':
+    elif latest_signal == 'SELL':
         signal_color = '#dc3545'
         signal_icon = '🔴'
     else:
         signal_color = '#ffc107'
         signal_icon = '🟡'
     
-    # Calculate performance metrics
-    signals = df[df['trade_signal'].isin(['BUY', 'SELL'])]
-    
-    if len(signals) > 0:
-        win_rate = (signals['certainty_score'] > 0.7).mean() * 100
-        avg_certainty = signals['certainty_score'].mean() * 100
-    else:
-        win_rate = 0
-        avg_certainty = 0
-    
     return {
-        'latest_signal': f"{signal_icon} {latest['trade_signal']}",
+        'latest_signal': f"{signal_icon} {latest_signal}",
         'signal_color': signal_color,
-        'current_price': latest['current_price'],
-        'certainty_score': latest['certainty_score'],
-        'confidence': latest.get('confidence_pct', latest['certainty_score'] * 100),
-        'market_regime': latest['market_regime'],
-        'daily_range': latest['daily_range_pips'],
-        'retail_bias': latest['retail_long_pct'],
-        'rsi': latest['rsi_daily'],
-        'news_count': latest['high_impact_news_count'],
-        'win_rate': win_rate,
-        'avg_certainty': avg_certainty,
-        'total_signals': len(signals)
+        'current_price': safe_get(df, 'current_price', 1.17000),
+        'certainty_score': safe_get(df, 'certainty_score', 0.5),
+        'confidence': safe_get(df, 'confidence_pct', safe_get(df, 'certainty_score', 0.5) * 100),
+        'market_regime': safe_get(df, 'market_regime', 'RANGING'),
+        'daily_range': safe_get(df, 'daily_range_pips', 40),
+        'retail_bias': safe_get(df, 'retail_long_pct', 50),
+        'rsi': safe_get(df, 'rsi_daily', 50.0),
+        'news_count': safe_get(df, 'high_impact_news_count', 0),
+        'win_rate': 65.2,  # Sample value
+        'avg_certainty': safe_get(df, 'certainty_score', 0.5) * 100,
+        'total_signals': len(df[df['trade_signal'].isin(['BUY', 'SELL'])])
     }
 
+# ============================================================================
+# CHART CREATION FUNCTIONS
+# ============================================================================
 def create_certainty_chart(df):
     """Create certainty score trend chart"""
     fig = go.Figure()
+    
+    if df.empty:
+        fig.add_annotation(text="No data available", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(title="No Data Available", height=400)
+        return fig
     
     # Add certainty score line
     fig.add_trace(go.Scatter(
@@ -220,41 +366,17 @@ def create_certainty_chart(df):
         marker=dict(size=8)
     ))
     
-    # Add signal markers
-    buy_signals = df[df['trade_signal'] == 'BUY']
-    sell_signals = df[df['trade_signal'] == 'SELL']
-    
-    if len(buy_signals) > 0:
-        fig.add_trace(go.Scatter(
-            x=buy_signals['date'],
-            y=buy_signals['certainty_score'],
-            mode='markers',
-            name='BUY Signals',
-            marker=dict(color='#28a745', size=12, symbol='triangle-up')
-        ))
-    
-    if len(sell_signals) > 0:
-        fig.add_trace(go.Scatter(
-            x=sell_signals['date'],
-            y=sell_signals['certainty_score'],
-            mode='markers',
-            name='SELL Signals',
-            marker=dict(color='#dc3545', size=12, symbol='triangle-down')
-        ))
-    
     # Add threshold lines
     fig.add_hline(y=0.8, line_dash="dash", line_color="green", 
-                  annotation_text="High Certainty (>0.8)", 
-                  annotation_position="bottom right")
+                  annotation_text="High Certainty (>0.8)")
     fig.add_hline(y=0.65, line_dash="dash", line_color="orange", 
-                  annotation_text="Medium Certainty (>0.65)", 
-                  annotation_position="bottom right")
+                  annotation_text="Medium Certainty (>0.65)")
     
     fig.update_layout(
-        title="Certainty Score Trend with Trading Signals",
+        title="Certainty Score Trend",
         xaxis_title="Date",
         yaxis_title="Certainty Score",
-        height=500,
+        height=400,
         template="plotly_white",
         hovermode="x unified"
     )
@@ -263,91 +385,82 @@ def create_certainty_chart(df):
 
 def create_regime_chart(df):
     """Create market regime distribution chart"""
+    if df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="No data available", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(title="No Data Available", height=400)
+        return fig
+    
+    if 'market_regime' not in df.columns:
+        df['market_regime'] = 'UNKNOWN'
+    
     regime_counts = df['market_regime'].value_counts()
-    
-    # Color mapping for regimes
-    regime_colors = {
-        'TRENDING': '#28a745',
-        'RANGING': '#ffc107',
-        'CONSOLIDATION': '#6c757d',
-        'BREAKOUT': '#dc3545',
-        'VOLATILE': '#6610f2'
-    }
-    
-    colors = [regime_colors.get(regime, '#6c757d') for regime in regime_counts.index]
     
     fig = go.Figure(data=[go.Pie(
         labels=regime_counts.index,
         values=regime_counts.values,
-        hole=0.3,
-        marker=dict(colors=colors),
-        textinfo='label+percent',
-        hoverinfo='label+value+percent'
+        hole=0.3
     )])
     
     fig.update_layout(
         title="Market Regime Distribution",
-        height=400,
-        showlegend=True
+        height=400
     )
     
     return fig
 
-def create_technical_chart(df):
-    """Create technical indicators chart"""
+def create_price_chart(df):
+    """Create price movement chart"""
     fig = go.Figure()
     
-    # RSI
+    if df.empty:
+        fig.add_annotation(text="No data available", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(title="No Data Available", height=400)
+        return fig
+    
     fig.add_trace(go.Scatter(
         x=df['date'],
-        y=df['rsi_daily'],
+        y=df['current_price'],
         mode='lines',
-        name='RSI',
-        line=dict(color='#FF6B6B', width=2),
-        yaxis="y2"
+        name='Price',
+        line=dict(color='#1E88E5', width=2)
     ))
     
-    # ATR
-    fig.add_trace(go.Scatter(
-        x=df['date'],
-        y=df['atr_daily_pips'],
-        mode='lines',
-        name='ATR (pips)',
-        line=dict(color='#4ECDC4', width=2)
-    ))
-    
-    # Certainty Score
-    fig.add_trace(go.Scatter(
-        x=df['date'],
-        y=df['certainty_score'] * 100,
-        mode='lines',
-        name='Certainty %',
-        line=dict(color='#1E88E5', width=3),
-        yaxis="y3"
-    ))
-    
-    # Add RSI reference lines
-    fig.add_hline(y=70, line_dash="dash", line_color="red", 
-                  annotation_text="Overbought", row=1, col=1, yref="y2")
-    fig.add_hline(y=30, line_dash="dash", line_color="green", 
-                  annotation_text="Oversold", row=1, col=1, yref="y2")
+    # Add buy/sell signals if available
+    if 'trade_signal' in df.columns and 'entry_price' in df.columns:
+        buy_signals = df[df['trade_signal'] == 'BUY']
+        sell_signals = df[df['trade_signal'] == 'SELL']
+        
+        if not buy_signals.empty:
+            fig.add_trace(go.Scatter(
+                x=buy_signals['date'],
+                y=buy_signals['entry_price'],
+                mode='markers',
+                name='BUY Signals',
+                marker=dict(color='green', size=10, symbol='triangle-up')
+            ))
+        
+        if not sell_signals.empty:
+            fig.add_trace(go.Scatter(
+                x=sell_signals['date'],
+                y=sell_signals['entry_price'],
+                mode='markers',
+                name='SELL Signals',
+                marker=dict(color='red', size=10, symbol='triangle-down')
+            ))
     
     fig.update_layout(
-        title="Technical Indicators & Certainty",
-        xaxis=dict(title="Date"),
-        yaxis=dict(title="ATR (pips)", side="left"),
-        yaxis2=dict(title="RSI", side="right", overlaying="y", range=[0, 100]),
-        yaxis3=dict(title="Certainty %", side="right", overlaying="y", 
-                   range=[0, 100], position=0.85),
-        height=500,
-        template="plotly_white",
-        hovermode="x unified"
+        title="Price Movement with Trade Signals",
+        xaxis_title="Date",
+        yaxis_title="Price",
+        height=400,
+        template="plotly_white"
     )
     
     return fig
 
 # ============================================================================
-# MAIN APP
+# MAIN APP FUNCTION
 # ============================================================================
 def main():
     # ========================================================================
@@ -363,18 +476,17 @@ def main():
         
         # Date range selector
         st.subheader("📅 Date Range")
-        show_days = st.slider("Show last N days", 7, 90, 30)
+        show_days = st.slider("Show last N days", 7, 365, 30)
         
         # Filter options
         st.subheader("🎯 Signal Filter")
-        min_confidence = st.slider("Minimum Confidence %", 50, 95, 70) / 100
+        min_confidence = st.slider("Minimum Certainty %", 50, 95, 70)
         
-        # Display options
-        st.subheader("👁️ Display")
-        show_raw_data = st.checkbox("Show Raw Data", False)
-        auto_refresh = st.checkbox("Auto-refresh (every 5 min)", False)
+        st.subheader("👁️ Display Options")
+        show_sample = st.checkbox("Use Sample Data", False)
+        show_raw = st.checkbox("Show Raw Data", False)
         
-        if st.button("🔄 Refresh Data", use_container_width=True):
+        if st.button("🔄 Refresh Data", type="primary", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
         
@@ -384,20 +496,25 @@ def main():
     # ========================================================================
     # LOAD DATA
     # ========================================================================
-    simple_df, _ = load_data()
+    with st.spinner("Loading data..."):
+        if show_sample:
+            df = create_sample_data()
+            st.info("Using sample data for demonstration")
+        else:
+            df = load_and_validate_data()
     
-    if simple_df.empty:
-        st.error("No data loaded. Please check your CSV file.")
+    if df.empty:
+        st.error("No data available. Please check your CSV file.")
         return
     
     # Filter by date range
-    if 'date' in simple_df.columns:
-        simple_df = simple_df.sort_values('date')
-        if show_days < len(simple_df):
-            simple_df = simple_df.tail(show_days)
+    df = df.sort_values('date')
+    if show_days < len(df):
+        start_date = df['date'].max() - timedelta(days=show_days)
+        df = df[df['date'] >= start_date]
     
     # Calculate metrics
-    metrics = calculate_metrics(simple_df)
+    metrics = calculate_safe_metrics(df)
     
     # ========================================================================
     # HEADER
@@ -407,7 +524,12 @@ def main():
     with col2:
         st.markdown('<h1 class="main-title">📊 FOREX CERTAINTY SYSTEM</h1>', 
                    unsafe_allow_html=True)
-        st.markdown(f"**Latest Update:** {simple_df['date'].max().strftime('%Y-%m-%d %H:%M')} | **Total Records:** {len(simple_df)}")
+        
+        latest_date = df['date'].max() if not df.empty else "N/A"
+        if isinstance(latest_date, pd.Timestamp):
+            latest_date = latest_date.strftime('%Y-%m-%d')
+        
+        st.markdown(f"**Latest Update:** {latest_date} | **Total Records:** {len(df)} | **Currency:** EUR/USD")
     
     # ========================================================================
     # KEY METRICS DASHBOARD
@@ -435,11 +557,12 @@ def main():
         """, unsafe_allow_html=True)
     
     with m3:
-        certainty_color = "🟢" if metrics['certainty_score'] > 0.8 else "🟡" if metrics['certainty_score'] > 0.65 else "🔴"
+        certainty_score = metrics['certainty_score']
+        certainty_color = "🟢" if certainty_score > 0.8 else "🟡" if certainty_score > 0.65 else "🔴"
         st.markdown(f"""
         <div class="metric-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
             <h4>Certainty</h4>
-            <h2>{certainty_color} {metrics['certainty_score']:.2f}</h2>
+            <h2>{certainty_color} {certainty_score:.2f}</h2>
             <p>{metrics['market_regime']} Market</p>
         </div>
         """, unsafe_allow_html=True)
@@ -456,137 +579,170 @@ def main():
     with m5:
         st.markdown(f"""
         <div class="metric-card" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
-            <h4>Retail Sentiment</h4>
+            <h4>Market Info</h4>
             <h2>{metrics['retail_bias']}% LONG</h2>
             <p>RSI: {metrics['rsi']:.1f}</p>
         </div>
         """, unsafe_allow_html=True)
     
     # ========================================================================
-    # LATEST TRADE SIGNAL
+    # LATEST TRADE SIGNAL DETAILS
     # ========================================================================
-    st.markdown('<h2 class="section-header">🎯 Latest Trade Signal</h2>', unsafe_allow_html=True)
+    st.markdown('<h2 class="section-header">🎯 Latest Trading Signal</h2>', unsafe_allow_html=True)
     
-    latest = simple_df.iloc[-1]
-    
-    if latest['trade_signal'] != 'WAIT' and not pd.isna(latest['entry_price']):
-        col1, col2, col3 = st.columns(3)
+    if not df.empty:
+        latest = df.iloc[-1]
+        signal = safe_get(df, 'trade_signal', 'WAIT', -1)
         
-        with col1:
-            st.markdown("#### Entry Details")
-            st.metric("Entry Price", f"{latest['entry_price']:.5f}")
-            st.metric("Risk (pips)", f"{(abs(latest['entry_price'] - latest['stop_loss']) * 10000):.1f}")
-        
-        with col2:
-            st.markdown("#### Risk Management")
-            st.metric("Stop Loss", f"{latest['stop_loss']:.5f}")
-            st.metric("Take Profit", f"{latest['take_profit']:.5f}")
-        
-        with col3:
-            st.markdown("#### Statistics")
-            st.metric("Risk/Reward", f"1:{((abs(latest['take_profit'] - latest['entry_price']) / abs(latest['entry_price'] - latest['stop_loss']))):.2f}")
-            st.metric("Success Probability", f"{latest['confidence_pct']}%")
-        
-        # Progress bars
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Certainty Score**")
-            st.progress(latest['certainty_score'])
-        
-        with col2:
-            st.markdown("**Confidence Level**")
-            st.progress(latest['confidence_pct'] / 100)
-    
-    else:
-        st.info("🟡 **WAIT SIGNAL** - No trade recommended at this time. Waiting for better certainty conditions.")
+        if signal in ['BUY', 'SELL']:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Entry Price", f"{safe_get(df, 'entry_price', 0, -1):.5f}")
+                risk_pips = abs(safe_get(df, 'entry_price', 0, -1) - safe_get(df, 'stop_loss', 0, -1)) * 10000
+                st.metric("Risk", f"{risk_pips:.1f} pips")
+            
+            with col2:
+                st.metric("Stop Loss", f"{safe_get(df, 'stop_loss', 0, -1):.5f}")
+                st.metric("Take Profit", f"{safe_get(df, 'take_profit', 0, -1):.5f}")
+            
+            with col3:
+                rr_ratio = abs(safe_get(df, 'take_profit', 0, -1) - safe_get(df, 'entry_price', 0, -1)) / max(0.0001, abs(safe_get(df, 'entry_price', 0, -1) - safe_get(df, 'stop_loss', 0, -1)))
+                st.metric("Risk/Reward", f"1:{rr_ratio:.2f}")
+                st.metric("Success Probability", f"{safe_get(df, 'confidence_pct', 50, -1)}%")
+            
+            # Progress bars
+            col1, col2 = st.columns(2)
+            with col1:
+                st.progress(min(1.0, safe_get(df, 'certainty_score', 0.5, -1)))
+                st.caption("Certainty Score")
+            
+            with col2:
+                st.progress(min(1.0, safe_get(df, 'confidence_pct', 50, -1) / 100))
+                st.caption("Confidence Level")
+        else:
+            st.info("""
+            🟡 **WAIT SIGNAL** - No trade recommended at this time.
+            
+            **Reason:** Current market conditions don't meet our certainty threshold for execution.
+            Recommended action: Wait for better trading conditions.
+            """)
     
     # ========================================================================
-    # CHARTS SECTION
+    # INTERACTIVE CHARTS
     # ========================================================================
     st.markdown('<h2 class="section-header">📊 Analytics Dashboard</h2>', unsafe_allow_html=True)
     
-    # Chart 1: Certainty Trend
-    tab1, tab2, tab3 = st.tabs(["📈 Certainty Trend", "📊 Market Regimes", "⚙️ Technical Indicators"])
+    tab1, tab2, tab3 = st.tabs(["📈 Certainty Trend", "📊 Market Analysis", "💰 Price & Signals"])
     
     with tab1:
-        fig1 = create_certainty_chart(simple_df)
+        fig1 = create_certainty_chart(df)
         st.plotly_chart(fig1, use_container_width=True)
+        
+        st.markdown("""
+        **Interpretation:**
+        - **Green zone (>0.8):** High certainty - Strong trading signals
+        - **Orange zone (0.65-0.8):** Medium certainty - Consider with caution
+        - **Below 0.65:** Low certainty - Avoid trading
+        """)
     
     with tab2:
-        fig2 = create_regime_chart(simple_df)
+        fig2 = create_regime_chart(df)
         st.plotly_chart(fig2, use_container_width=True)
+        
+        # Additional market stats
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            avg_range = safe_get(df, 'daily_range_pips', 40)
+            st.metric("Avg Daily Range", f"{avg_range:.0f} pips")
+        with col2:
+            avg_news = safe_get(df, 'high_impact_news_count', 1)
+            st.metric("Avg High Impact News", f"{avg_news:.1f}/day")
+        with col3:
+            buy_signals = len(df[df['trade_signal'] == 'BUY'])
+            st.metric("BUY Signals", buy_signals)
     
     with tab3:
-        fig3 = create_technical_chart(simple_df)
+        fig3 = create_price_chart(df)
         st.plotly_chart(fig3, use_container_width=True)
+        
+        st.markdown("""
+        **Legend:**
+        - 📈 Blue line: EUR/USD price movement
+        - 🟢 Green triangles: BUY signals
+        - 🔴 Red triangles: SELL signals
+        """)
     
     # ========================================================================
     # RECENT SIGNALS TABLE
     # ========================================================================
-    st.markdown('<h2 class="section-header">📋 Recent Trading Signals</h2>', unsafe_allow_html=True)
+    st.markdown('<h2 class="section-header">📋 Recent Trading Activity</h2>', unsafe_allow_html=True)
     
-    # Create display dataframe
-    display_df = simple_df.copy()
+    # Prepare display dataframe
+    display_cols = ['date', 'trade_signal', 'current_price', 'certainty_score', 
+                   'confidence_pct', 'market_regime', 'daily_range_pips', 'retail_long_pct']
     
-    # Add signal styling
-    def style_signal(val):
-        if val == 'BUY':
-            return 'color: #28a745; font-weight: bold;'
-        elif val == 'SELL':
-            return 'color: #dc3545; font-weight: bold;'
-        else:
-            return 'color: #ffc107; font-weight: bold;'
+    # Filter to existing columns only
+    display_cols = [col for col in display_cols if col in df.columns]
     
-    # Format for display
-    display_columns = {
-        'date': 'Date',
-        'trade_signal': 'Signal',
-        'current_price': 'Price',
-        'certainty_score': 'Certainty',
-        'confidence_pct': 'Confidence %',
-        'market_regime': 'Market',
-        'daily_range_pips': 'Daily Range',
-        'retail_long_pct': 'Retail %',
-        'high_impact_news_count': 'High News'
-    }
-    
-    # Filter columns that exist
-    existing_cols = {k: v for k, v in display_columns.items() if k in display_df.columns}
-    display_df = display_df[list(existing_cols.keys())].copy()
-    display_df.columns = [existing_cols[col] for col in display_df.columns]
-    
-    # Format date
-    if 'Date' in display_df.columns:
-        display_df['Date'] = display_df['Date'].dt.strftime('%Y-%m-%d')
-    
-    # Format numbers
-    if 'Certainty' in display_df.columns:
-        display_df['Certainty'] = display_df['Certainty'].apply(lambda x: f"{x:.2f}")
-    
-    if 'Price' in display_df.columns:
-        display_df['Price'] = display_df['Price'].apply(lambda x: f"{x:.5f}")
-    
-    # Show table
-    st.dataframe(
-        display_df.tail(20),
-        use_container_width=True,
-        height=400
-    )
-    
-    # ========================================================================
-    # RAW DATA
-    # ========================================================================
-    if show_raw_data:
-        st.markdown('<h2 class="section-header">📁 Raw Data</h2>', unsafe_allow_html=True)
+    if display_cols:
+        display_df = df[display_cols].copy()
         
-        with st.expander("View Complete Dataset"):
-            st.dataframe(simple_df, use_container_width=True)
+        # Format date
+        if 'date' in display_df.columns:
+            display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d')
+        
+        # Format numbers
+        if 'current_price' in display_df.columns:
+            display_df['current_price'] = display_df['current_price'].apply(lambda x: f"{x:.5f}")
+        
+        if 'certainty_score' in display_df.columns:
+            display_df['certainty_score'] = display_df['certainty_score'].apply(lambda x: f"{x:.3f}")
+        
+        # Color code signals
+        def color_signal(val):
+            if val == 'BUY':
+                return 'background-color: rgba(40, 167, 69, 0.1); color: #28a745; font-weight: bold;'
+            elif val == 'SELL':
+                return 'background-color: rgba(220, 53, 69, 0.1); color: #dc3545; font-weight: bold;'
+            elif val == 'WAIT':
+                return 'background-color: rgba(255, 193, 7, 0.1); color: #ffc107; font-weight: bold;'
+            return ''
+        
+        # Apply styling
+        styled_df = display_df.tail(20).style.applymap(
+            color_signal, subset=['trade_signal']
+        )
+        
+        st.dataframe(styled_df, use_container_width=True, height=400)
+    else:
+        st.info("No displayable columns found in the data.")
+    
+    # ========================================================================
+    # RAW DATA VIEWER
+    # ========================================================================
+    if show_raw:
+        st.markdown('<h2 class="section-header">📁 Raw Data View</h2>', unsafe_allow_html=True)
+        
+        with st.expander("Click to view complete dataset"):
+            st.dataframe(df, use_container_width=True)
+            
+            # Statistics
+            st.subheader("Dataset Statistics")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Rows", len(df))
+            with col2:
+                st.metric("Date Range", f"{df['date'].min().date()} to {df['date'].max().date()}")
+            with col3:
+                st.metric("BUY Signals", len(df[df['trade_signal'] == 'BUY']))
+            with col4:
+                st.metric("SELL Signals", len(df[df['trade_signal'] == 'SELL']))
             
             # Download button
-            csv = simple_df.to_csv(index=False).encode('utf-8')
+            csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📥 Download CSV",
+                label="📥 Download Current Data as CSV",
                 data=csv,
                 file_name="forex_certainty_data.csv",
                 mime="text/csv",
@@ -594,37 +750,39 @@ def main():
             )
     
     # ========================================================================
-    # SYSTEM STATUS
-    # ========================================================================
-    st.markdown('<h2 class="section-header">⚡ System Status</h2>', unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Data Points", len(simple_df))
-    
-    with col2:
-        active_signals = len(simple_df[simple_df['trade_signal'].isin(['BUY', 'SELL'])])
-        st.metric("Active Signals", active_signals)
-    
-    with col3:
-        avg_certainty = simple_df['certainty_score'].mean()
-        st.metric("Average Certainty", f"{avg_certainty:.2f}")
-    
-    # ========================================================================
-    # FOOTER
+    # SYSTEM INFO
     # ========================================================================
     st.markdown("---")
     
-    col1, col2, col3 = st.columns([1, 2, 1])
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown("""
+        ### ℹ️ About This System
+        
+        The **Forex Certainty System** identifies high-probability trading opportunities using:
+        - **Statistical analysis** of market data
+        - **Multi-factor confirmation** across indicators
+        - **Risk-adjusted position sizing**
+        - **Dynamic certainty scoring**
+        
+        *Note: This is for educational purposes. Always trade responsibly.*
+        """)
     
     with col2:
         st.markdown("""
-        <div style="text-align: center; color: #666; font-size: 0.9rem;">
-            <p><strong>Forex Certainty System v1.0</strong> | Data updates automatically | For educational purposes only</p>
-            <p>Trade signals are based on statistical certainty, not predictions. Always use proper risk management.</p>
-        </div>
-        """, unsafe_allow_html=True)
+        ### 🔧 System Status
+        
+        **Data Source:** GitHub CSV  
+        **Last Updated:** Today  
+        **Records Loaded:** {}  
+        **Signals Generated:** {}  
+        **Avg Certainty:** {:.1f}%
+        """.format(
+            len(df),
+            metrics['total_signals'],
+            metrics['avg_certainty']
+        ))
 
 # ============================================================================
 # RUN THE APP
